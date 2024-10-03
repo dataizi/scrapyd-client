@@ -8,6 +8,7 @@ import sys
 import tempfile
 import time
 from argparse import ArgumentParser
+from configparser import NoOptionError
 from subprocess import PIPE, Popen, check_call
 from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin
@@ -71,6 +72,11 @@ def parse_args():
         "--include-dependencies",
         action="store_true",
         help="include dependencies from requirements.txt in the egg",
+    )
+    parser.add_argument(
+        "--override-setup-file",
+        action="store_true",
+        help="if setup.py file already exists, it will be overridden with a new one",
     )
     return parser.parse_args()
 
@@ -280,9 +286,16 @@ def _http_post(request):
 def _build_egg(opts):
     closest = closest_scrapy_cfg()
     os.chdir(os.path.dirname(closest))
-    if not os.path.exists("setup.py"):
-        settings = get_config().get("settings", "default")
+
+    if opts.override_setup_file or not os.path.exists("setup.py"):
+        config = get_config()
+        try:
+            settings = config.get("settings", opts.target)
+        except NoOptionError:
+            # always fall back to the default settings if specific ones are missing
+            settings = config.get("settings", "default")
         _create_default_setup_py(settings=settings)
+
     d = tempfile.mkdtemp(prefix="scrapydeploy-")
     o = open(os.path.join(d, "stdout"), "wb")
     e = open(os.path.join(d, "stderr"), "wb")

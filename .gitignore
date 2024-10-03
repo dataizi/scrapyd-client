@@ -7,3 +7,4 @@ htmlcov
 .cache/
 .coverage
 venv/
+.idea
