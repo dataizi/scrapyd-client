@@ -1,5 +1,6 @@
 import os
 import re
+import zipfile
 from io import BytesIO
 from textwrap import dedent
 from unittest.mock import patch
@@ -64,6 +65,17 @@ def project_with_dependencies(project):
 
 
 @pytest.fixture
+def project_with_requirements(project):
+    """A project that declares runtime requirements, as every project must.
+
+    Building an egg writes these into EGG-INFO/requires.txt so the server can
+    check them against what it has installed.
+    """
+    with open("requirements.txt", "w") as f:
+        f.write("# a comment\nscrapy>=2.0\n\nrequests==2.31.0\n-r other.txt\n")
+
+
+@pytest.fixture
 def conf_empty_section_implicit_target(project):
     _write_conf_file("[deploy]")
 
@@ -84,7 +96,7 @@ def conf_no_project(project):
 
 
 @pytest.fixture
-def conf_no_url(project):
+def conf_no_url(project_with_requirements):
     _write_conf_file(
         """\
         [deploy:mytarget]
@@ -94,7 +106,7 @@ def conf_no_url(project):
 
 
 @pytest.fixture
-def conf_default_target(project):
+def conf_default_target(project_with_requirements):
     _write_conf_file(
         """\
         [deploy]
@@ -181,7 +193,14 @@ def test_list_targets_missing_url(script_runner, conf_no_url):
     ret = script_runner.run("scrapyd-deploy", "mytarget")
 
     assert ret.stdout == ""
-    assertLines(ret.stderr, [r"Packing version \d+", "Error: Missing url for project"])
+    assertLines(
+        ret.stderr,
+        [
+            r"Packing version \d+",
+            r"Declared 2 requirements in EGG-INFO/requires\.txt",
+            "Error: Missing url for project",
+        ],
+    )
     assert not ret.success
 
 
@@ -265,16 +284,51 @@ def test_deploy_missing_url(script_runner, conf_no_url):
     ret = script_runner.run("scrapyd-deploy", "mytarget")
 
     assert ret.stdout == ""
-    assertLines(ret.stderr, [r"Packing version \d+", "Error: Missing url for project"])
+    assertLines(
+        ret.stderr,
+        [
+            r"Packing version \d+",
+            r"Declared 2 requirements in EGG-INFO/requires\.txt",
+            "Error: Missing url for project",
+        ],
+    )
     assert not ret.success
 
 
-def test_build_egg(script_runner, project):
+def test_build_egg(script_runner, project_with_requirements):
     ret = script_runner.run("scrapyd-deploy", "--build-egg", "myegg.egg")
 
     assert ret.stdout == ""
-    assertLines(ret.stderr, "Writing egg to myegg.egg")
+    assertLines(
+        ret.stderr,
+        dedent(
+            """\
+            Declared 2 requirements in EGG-INFO/requires.txt
+            Writing egg to myegg.egg
+            """
+        ),
+    )
     assert ret.success
+
+
+def test_build_egg_declares_requirements(script_runner, project_with_requirements):
+    ret = script_runner.run("scrapyd-deploy", "--build-egg", "myegg.egg")
+    assert ret.success
+
+    with zipfile.ZipFile("myegg.egg") as egg:
+        declared = egg.read("EGG-INFO/requires.txt").decode("utf-8")
+
+    # Comments, blank lines and pip options are dropped; the rest is verbatim.
+    assert declared == "scrapy>=2.0\nrequests==2.31.0\n"
+
+
+def test_build_egg_missing_requirements(script_runner, project):
+    ret = script_runner.run("scrapyd-deploy", "--build-egg", "myegg.egg")
+
+    assert ret.stdout == ""
+    assert "Error: Missing requirements.txt" in ret.stderr
+    assert not ret.success
+    assert not os.path.exists("myegg.egg")
 
 
 def test_build_egg_inc_dependencies_no_dep(script_runner, project):
@@ -306,6 +360,7 @@ def test_build_egg_inc_dependencies_with_dep(script_runner, project_with_depende
         dedent(
             """\
             Including dependencies from requirements.txt
+            Declared 0 requirements in EGG-INFO/requires.txt
             Writing egg to myegg-deps.egg
             """
         ),
@@ -326,6 +381,7 @@ def test_deploy_success(script_runner, conf_default_target):
             ret.stderr,
             [
                 r"Packing version \d+",
+                r"Declared 2 requirements in EGG-INFO/requires\.txt",
                 r'Deploying to project "scrapydproject" in http://localhost:6800/addversion\.json',
                 r"Server response \(200\):",
             ],
@@ -362,6 +418,7 @@ def test_deploy_httperror(content, expected, script_runner, conf_default_target)
             ret.stderr,
             [
                 r"Packing version \d+",
+                r"Declared 2 requirements in EGG-INFO/requires\.txt",
                 r'Deploying to project "scrapydproject" in http://localhost:6800/addversion\.json',
                 r"Deploy failed \(404\):",
             ],
@@ -381,6 +438,7 @@ def test_deploy_urlerror(script_runner, conf_default_target):
             ret.stderr,
             [
                 r"Packing version \d+",
+                r"Declared 2 requirements in EGG-INFO/requires\.txt",
                 r'Deploying to project "scrapydproject" in http://localhost:6800/addversion\.json',
                 r"Deploy failed: <urlopen error content>",
             ],
